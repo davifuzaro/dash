@@ -1,0 +1,447 @@
+import React, { useState, useEffect, useRef } from 'react';
+import { 
+  Network as NetworkIcon, 
+  Search, 
+  ZoomIn, 
+  ZoomOut, 
+  Maximize2,
+  Users,
+  TrendingUp,
+  Award,
+  Filter,
+  Download,
+  Loader2
+} from 'lucide-react';
+import * as d3 from 'd3';
+
+interface NetworkNode {
+  id: string;
+  name: string;
+  graduacao: string;
+  clientesAtivos: number;
+  licenciadosAtivos: number;
+  cidade: string;
+  uf: string;
+  children?: NetworkNode[];
+  _children?: NetworkNode[];
+  depth?: number;
+  x?: number;
+  y?: number;
+}
+
+const Network: React.FC = () => {
+  const svgRef = useRef<SVGSVGElement>(null);
+  const [loading, setLoading] = useState(true);
+  const [searchTerm, setSearchTerm] = useState('');
+  const [selectedNode, setSelectedNode] = useState<NetworkNode | null>(null);
+  const [treeData, setTreeData] = useState<NetworkNode | null>(null);
+  const [stats, setStats] = useState({
+    totalNodes: 0,
+    maxDepth: 0,
+    totalClientes: 0
+  });
+
+  // Cores por graduação
+  const getGraduationColor = (graduacao: string) => {
+    const colors: Record<string, string> = {
+      'PRESIDENTE GREEN': '#FFD700',
+      'DIRETOR GREEN': '#C0C0C0',
+      'EXECUTIVO GREEN': '#CD7F32',
+      'GESTOR GREEN': '#10B981',
+      'CONSULTOR SENIOR': '#3B82F6',
+      'DEFAULT': '#6B7280'
+    };
+    return colors[graduacao] || colors.DEFAULT;
+  };
+
+  useEffect(() => {
+    fetchNetworkData();
+  }, []);
+
+  const fetchNetworkData = async () => {
+    try {
+      setLoading(true);
+      
+      // Buscar dados da rede
+      const response = await fetch('/api/sync-sheets?full=true');
+      const data = await response.json();
+      
+      if (data.success) {
+        const networkData = buildNetworkTree(data.data);
+        setTreeData(networkData);
+        calculateStats(networkData);
+        if (networkData) {
+          renderTree(networkData);
+        }
+      }
+      
+      setLoading(false);
+    } catch (error) {
+      console.error('Erro ao carregar dados da rede:', error);
+      setLoading(false);
+    }
+  };
+
+  const buildNetworkTree = (data: any[]): NetworkNode | null => {
+    // Criar mapa de IDs para nós
+    const nodeMap = new Map<string, NetworkNode>();
+    
+    // Primeiro, criar todos os nós
+    data.forEach(item => {
+      if (item.Cancelado === 'N') {
+        nodeMap.set(item.Codigo, {
+          id: item.Codigo,
+          name: item.Nome || 'N/A',
+          graduacao: item.Graduacao || 'N/A',
+          clientesAtivos: parseInt(item['Clientes Ativos']) || 0,
+          licenciadosAtivos: parseInt(item['Licenciados Ativos']) || 0,
+          cidade: item.Cidade || 'N/A',
+          uf: item.Uf || 'N/A',
+          children: []
+        });
+      }
+    });
+
+    // Depois, conectar os nós
+    data.forEach(item => {
+      if (item.Cancelado === 'N' && item.Idpatrocinador && item.Idpatrocinador !== '0') {
+        const node = nodeMap.get(item.Codigo);
+        const parent = nodeMap.get(item.Idpatrocinador);
+        
+        if (node && parent) {
+          if (!parent.children) parent.children = [];
+          parent.children.push(node);
+        }
+      }
+    });
+
+    // Encontrar nós raiz (sem patrocinador ou patrocinador não encontrado)
+    const rootNodes = Array.from(nodeMap.values()).filter(node => {
+      const hasParent = data.some(item => 
+        item.Codigo === node.id && 
+        item.Idpatrocinador && 
+        item.Idpatrocinador !== '0' && 
+        nodeMap.has(item.Idpatrocinador)
+      );
+      return !hasParent;
+    });
+
+    // Se houver múltiplas raízes, criar uma raiz virtual
+    if (rootNodes.length > 1) {
+      return {
+        id: 'root',
+        name: 'iGreen Energy',
+        graduacao: 'ROOT',
+        clientesAtivos: rootNodes.reduce((sum, node) => sum + node.clientesAtivos, 0),
+        licenciadosAtivos: rootNodes.reduce((sum, node) => sum + node.licenciadosAtivos, 0),
+        cidade: 'Brasil',
+        uf: 'BR',
+        children: rootNodes
+      };
+    } else if (rootNodes.length === 1) {
+      return rootNodes[0];
+    }
+
+    return null;
+  };
+
+  const calculateStats = (root: NetworkNode | null) => {
+    if (!root) return;
+
+    let totalNodes = 0;
+    let maxDepth = 0;
+    let totalClientes = 0;
+
+    const traverse = (node: NetworkNode, depth: number) => {
+      totalNodes++;
+      maxDepth = Math.max(maxDepth, depth);
+      totalClientes += node.clientesAtivos;
+
+      if (node.children) {
+        node.children.forEach(child => traverse(child, depth + 1));
+      }
+    };
+
+    traverse(root, 0);
+    setStats({ totalNodes, maxDepth, totalClientes });
+  };
+
+  const renderTree = (data: NetworkNode) => {
+    if (!svgRef.current) return;
+
+    // Limpar SVG anterior
+    d3.select(svgRef.current).selectAll('*').remove();
+
+    const width = svgRef.current.clientWidth;
+    const height = svgRef.current.clientHeight;
+    const margin = { top: 20, right: 120, bottom: 20, left: 120 };
+
+    const svg = d3.select(svgRef.current)
+      .attr('width', width)
+      .attr('height', height);
+
+    const g = svg.append('g')
+      .attr('transform', `translate(${width / 2},${height / 2})`);
+
+    // Adicionar zoom
+    const zoom = d3.zoom<SVGSVGElement, unknown>()
+      .scaleExtent([0.1, 3])
+      .on('zoom', (event) => {
+        g.attr('transform', event.transform);
+      });
+
+    svg.call(zoom);
+
+    // Criar layout de árvore radial
+    const tree = d3.tree<NetworkNode>()
+      .size([2 * Math.PI, Math.min(width, height) / 2 - 100])
+      .separation((a, b) => (a.parent === b.parent ? 1 : 2) / a.depth!);
+
+    const root = d3.hierarchy(data);
+    tree(root as any);
+
+    // Links
+    const link = g.selectAll('.link')
+      .data(root.links())
+      .enter().append('path')
+      .attr('class', 'link')
+      .attr('d', d3.linkRadial<any, any>()
+        .angle(d => d.x)
+        .radius(d => d.y))
+      .style('fill', 'none')
+      .style('stroke', '#374151')
+      .style('stroke-width', 1.5)
+      .style('opacity', 0.6);
+
+    // Nodes
+    const node = g.selectAll('.node')
+      .data(root.descendants())
+      .enter().append('g')
+      .attr('class', 'node')
+      .attr('transform', (d: any) => `
+        rotate(${d.x * 180 / Math.PI - 90})
+        translate(${d.y},0)
+      `)
+      .style('cursor', 'pointer');
+
+    // Círculos dos nós
+    node.append('circle')
+      .attr('r', (d: any) => Math.max(4, Math.min(20, Math.sqrt(d.data.clientesAtivos + 1) * 2)))
+      .style('fill', (d: any) => getGraduationColor(d.data.graduacao))
+      .style('stroke', '#fff')
+      .style('stroke-width', 2)
+      .on('mouseover', function(event, d: any) {
+        d3.select(this)
+          .transition()
+          .duration(200)
+          .attr('r', (d: any) => Math.max(6, Math.min(25, Math.sqrt(d.data.clientesAtivos + 1) * 2.5)));
+        
+        setSelectedNode(d.data);
+      })
+      .on('mouseout', function(event, d: any) {
+        d3.select(this)
+          .transition()
+          .duration(200)
+          .attr('r', (d: any) => Math.max(4, Math.min(20, Math.sqrt(d.data.clientesAtivos + 1) * 2)));
+      })
+      .on('click', (event, d: any) => {
+        // Toggle children
+        if (d.children) {
+          d._children = d.children;
+          d.children = null;
+        } else {
+          d.children = d._children;
+          d._children = null;
+        }
+        renderTree(data);
+      });
+
+    // Labels
+    node.append('text')
+      .attr('dy', '.31em')
+      .attr('x', (d: any) => d.x < Math.PI === !d.children ? 6 : -6)
+      .attr('text-anchor', (d: any) => d.x < Math.PI === !d.children ? 'start' : 'end')
+      .attr('transform', (d: any) => d.x >= Math.PI ? 'rotate(180)' : null)
+      .text((d: any) => d.data.name)
+      .style('font-size', '10px')
+      .style('fill', '#e5e7eb');
+
+    // Adicionar animação inicial
+    node
+      .style('opacity', 0)
+      .transition()
+      .duration(800)
+      .delay((d: any, i: number) => i * 10)
+      .style('opacity', 1);
+  };
+
+  const SearchBar = () => (
+    <div className="relative">
+      <Search className="absolute left-3 top-1/2 transform -translate-y-1/2 w-5 h-5 text-zinc-400" />
+      <input
+        type="text"
+        placeholder="Buscar licenciado..."
+        value={searchTerm}
+        onChange={(e) => setSearchTerm(e.target.value)}
+        className="pl-10 pr-4 py-2 bg-zinc-800 border border-zinc-700 rounded-lg text-sm focus:outline-none focus:border-emerald-500 transition-colors w-64"
+      />
+    </div>
+  );
+
+  const StatsCard = ({ icon: Icon, title, value, color }: any) => (
+    <div className="bg-zinc-900/50 backdrop-blur-lg rounded-lg p-4 border border-zinc-800">
+      <div className="flex items-center justify-between">
+        <div>
+          <p className="text-sm text-zinc-400">{title}</p>
+          <p className="text-2xl font-bold text-white">{value}</p>
+        </div>
+        <div className={`w-12 h-12 ${color} rounded-lg flex items-center justify-center`}>
+          <Icon className="w-6 h-6 text-white" />
+        </div>
+      </div>
+    </div>
+  );
+
+  if (loading) {
+    return (
+      <div className="min-h-screen bg-black text-white flex items-center justify-center">
+        <div className="text-center">
+          <Loader2 className="w-12 h-12 text-emerald-500 animate-spin mx-auto mb-4" />
+          <p className="text-zinc-400">Carregando rede...</p>
+        </div>
+      </div>
+    );
+  }
+
+  return (
+    <div className="min-h-screen bg-black text-white">
+      <div className="p-6">
+        {/* Header */}
+        <div className="flex items-center justify-between mb-6">
+          <div className="flex items-center space-x-4">
+            <div className="p-3 bg-zinc-800 rounded-lg">
+              <NetworkIcon className="w-8 h-8 text-emerald-500" />
+            </div>
+            <div>
+              <h1 className="text-3xl font-bold">Visualização de Rede</h1>
+              <p className="text-zinc-400 mt-1">Explore a hierarquia completa de patrocinadores</p>
+            </div>
+          </div>
+          <div className="flex items-center space-x-4">
+            <SearchBar />
+            <button className="p-2 bg-zinc-800 hover:bg-zinc-700 rounded-lg transition-colors">
+              <Filter className="w-5 h-5" />
+            </button>
+            <button className="p-2 bg-zinc-800 hover:bg-zinc-700 rounded-lg transition-colors">
+              <Download className="w-5 h-5" />
+            </button>
+          </div>
+        </div>
+
+        {/* Stats Cards */}
+        <div className="grid grid-cols-1 md:grid-cols-3 gap-4 mb-6">
+          <StatsCard 
+            icon={Users}
+            title="Total de Nós"
+            value={stats.totalNodes.toLocaleString('pt-BR')}
+            color="bg-emerald-500"
+          />
+          <StatsCard 
+            icon={TrendingUp}
+            title="Profundidade Máxima"
+            value={stats.maxDepth}
+            color="bg-blue-500"
+          />
+          <StatsCard 
+            icon={Award}
+            title="Total de Clientes"
+            value={stats.totalClientes.toLocaleString('pt-BR')}
+            color="bg-purple-500"
+          />
+        </div>
+
+        {/* Network Visualization */}
+        <div className="grid grid-cols-1 lg:grid-cols-4 gap-6">
+          <div className="lg:col-span-3">
+            <div className="bg-zinc-900/50 backdrop-blur-lg rounded-xl border border-zinc-800 p-6" style={{ height: '600px' }}>
+              <div className="flex items-center justify-between mb-4">
+                <h3 className="text-lg font-semibold">Árvore Hierárquica</h3>
+                <div className="flex items-center space-x-2">
+                  <button className="p-1 hover:bg-zinc-800 rounded transition-colors">
+                    <ZoomOut className="w-4 h-4" />
+                  </button>
+                  <button className="p-1 hover:bg-zinc-800 rounded transition-colors">
+                    <ZoomIn className="w-4 h-4" />
+                  </button>
+                  <button className="p-1 hover:bg-zinc-800 rounded transition-colors">
+                    <Maximize2 className="w-4 h-4" />
+                  </button>
+                </div>
+              </div>
+              <svg ref={svgRef} className="w-full h-full" />
+            </div>
+          </div>
+
+          {/* Node Details */}
+          <div className="lg:col-span-1">
+            <div className="bg-zinc-900/50 backdrop-blur-lg rounded-xl border border-zinc-800 p-6">
+              <h3 className="text-lg font-semibold mb-4">Detalhes do Nó</h3>
+              {selectedNode ? (
+                <div className="space-y-4">
+                  <div>
+                    <p className="text-sm text-zinc-400">Nome</p>
+                    <p className="font-medium">{selectedNode.name}</p>
+                  </div>
+                  <div>
+                    <p className="text-sm text-zinc-400">Graduação</p>
+                    <span className={`inline-block px-2 py-1 rounded-full text-xs`} style={{
+                      backgroundColor: getGraduationColor(selectedNode.graduacao) + '20',
+                      color: getGraduationColor(selectedNode.graduacao)
+                    }}>
+                      {selectedNode.graduacao}
+                    </span>
+                  </div>
+                  <div>
+                    <p className="text-sm text-zinc-400">Clientes Ativos</p>
+                    <p className="font-medium">{selectedNode.clientesAtivos}</p>
+                  </div>
+                  <div>
+                    <p className="text-sm text-zinc-400">Licenciados Ativos</p>
+                    <p className="font-medium">{selectedNode.licenciadosAtivos}</p>
+                  </div>
+                  <div>
+                    <p className="text-sm text-zinc-400">Localização</p>
+                    <p className="font-medium">{selectedNode.cidade}/{selectedNode.uf}</p>
+                  </div>
+                </div>
+              ) : (
+                <p className="text-zinc-400 text-sm">Passe o mouse sobre um nó para ver os detalhes</p>
+              )}
+            </div>
+
+            {/* Legend */}
+            <div className="bg-zinc-900/50 backdrop-blur-lg rounded-xl border border-zinc-800 p-6 mt-4">
+              <h3 className="text-lg font-semibold mb-4">Legenda</h3>
+              <div className="space-y-2">
+                {Object.entries({
+                  'PRESIDENTE GREEN': '#FFD700',
+                  'DIRETOR GREEN': '#C0C0C0',
+                  'EXECUTIVO GREEN': '#CD7F32',
+                  'GESTOR GREEN': '#10B981',
+                  'CONSULTOR SENIOR': '#3B82F6'
+                }).map(([grad, color]) => (
+                  <div key={grad} className="flex items-center space-x-2">
+                    <div className="w-4 h-4 rounded-full" style={{ backgroundColor: color }} />
+                    <span className="text-sm">{grad}</span>
+                  </div>
+                ))}
+              </div>
+            </div>
+          </div>
+        </div>
+      </div>
+    </div>
+  );
+};
+
+export default Network;

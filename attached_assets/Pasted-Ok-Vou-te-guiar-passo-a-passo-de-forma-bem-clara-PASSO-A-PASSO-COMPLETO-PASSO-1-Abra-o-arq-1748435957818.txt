@@ -1,0 +1,174 @@
+Ok! Vou te guiar passo a passo de forma bem clara! 📝
+🎯 PASSO A PASSO COMPLETO:
+PASSO 1: Abra o arquivo server/services/ai-service.ts
+PASSO 2: Localize o método calculateMetrics (por volta da linha 68)
+PROCURE POR:
+typescriptprivate calculateMetrics(licenciados: any[]) {
+SUBSTITUA TODO O MÉTODO pelo código abaixo:
+typescriptprivate calculateMetrics(licenciados: any[]) {
+  const total = licenciados.length;
+  
+  console.log("🔍 DEBUG METRICS - Analisando colunas para status ativo...");
+  
+  // Verificar diferentes possibilidades de nome da coluna
+  const possibleActiveColumns = [
+    "Data Ativo", "DataAtivo", "data_ativo", "DATA_ATIVO", 
+    "Data_Ativo", "dataAtivo", "Data ativo", "data ativo"
+  ];
+  
+  let activeColumnName = null;
+  if (licenciados.length > 0) {
+    const firstRecord = licenciados[0];
+    for (const colName of possibleActiveColumns) {
+      if (firstRecord.hasOwnProperty(colName)) {
+        activeColumnName = colName;
+        console.log(`✅ Coluna de status encontrada: "${colName}"`);
+        break;
+      }
+    }
+    
+    if (!activeColumnName) {
+      console.log("❌ ERRO: Nenhuma coluna de status ativo encontrada!");
+      console.log("Colunas disponíveis:", Object.keys(firstRecord));
+    }
+  }
+  
+  // Calcular ativos
+  const ativos = activeColumnName 
+    ? licenciados.filter(l => {
+        const valor = l[activeColumnName];
+        const isActive = valor && valor.toString().trim() !== "";
+        return isActive;
+      }).length
+    : 0;
+  
+  console.log(`📊 Ativos encontrados: ${ativos} de ${total}`);
+  
+  const inativos = total - ativos;
+  const taxaConversao = total > 0 ? (ativos / total) * 100 : 0;
+
+  // Resto do código continua igual...
+  const graduacoes = licenciados.reduce((acc, l) => {
+    const grad = l["Graduação"] || l["graduacao"] || l["GRADUACAO"] || "Sem Graduação";
+    acc[grad] = (acc[grad] || 0) + 1;
+    return acc;
+  }, {});
+
+  const estados = licenciados.reduce((acc, l) => {
+    const uf = l["UF"] || l["uf"] || l["Uf"] || "N/A";
+    acc[uf] = (acc[uf] || 0) + 1;
+    return acc;
+  }, {});
+
+  const totalClientes = licenciados.reduce((sum, l) => {
+    return sum + (parseInt(l["Clientes Ativos"]) || 0);
+  }, 0);
+  
+  const mediaClientesPorLicenciado = ativos > 0 ? totalClientes / ativos : 0;
+
+  const result = {
+    total,
+    ativos,
+    inativos,
+    taxaConversao: parseFloat(taxaConversao.toFixed(2)),
+    graduacoes,
+    estados,
+    totalClientes,
+    mediaClientesPorLicenciado: parseFloat(mediaClientesPorLicenciado.toFixed(2))
+  };
+  
+  console.log("📊 MÉTRICAS FINAIS:", result);
+  
+  return result;
+}
+PASSO 3: Localize o método chatQuery (por volta da linha 160)
+No início do método, logo após o try {, adicione estes logs:
+typescriptasync chatQuery(message: string, context?: any): Promise<ChatMessage> {
+  try {
+    // SEMPRE buscar dados atualizados do Google Sheets
+    const licenciados = await this.getLicenciadosFromSheets();
+    
+    // ADICIONE ESTES LOGS AQUI! 👇
+    console.log("\n=== DEBUG CHAT QUERY ===");
+    console.log("🔍 Total licenciados carregados:", licenciados.length);
+    if (licenciados.length > 0) {
+      console.log("🔍 Primeiro registro (para ver colunas):");
+      console.log(JSON.stringify(licenciados[0], null, 2));
+    }
+    
+    const metrics = this.calculateMetrics(licenciados);
+    console.log("📊 Métricas calculadas:", metrics);
+    console.log("=== FIM DEBUG ===\n");
+    // FIM DOS LOGS 👆
+
+    // Resto do código continua...
+PASSO 4: Encontre a variável systemPrompt (por volta da linha 220)
+PROCURE POR:
+typescriptconst systemPrompt = `Você é GAIA
+SUBSTITUA TODO O systemPrompt por:
+typescriptconst systemPrompt = `Você é GAIA, assistente de dados da iGreen Energy.
+
+REGRA #1: Use SEMPRE os números exatos fornecidos no JSON abaixo.
+REGRA #2: NUNCA diga que precisa consultar dados - você JÁ TEM os dados.
+REGRA #3: Responda de forma direta com os números do JSON.
+
+Exemplos de respostas corretas:
+- "Temos exatamente X licenciados ativos"
+- "A taxa de conversão atual é Y%"
+- "Do total de Z licenciados, X estão ativos e W inativos"
+
+NUNCA responda com:
+- "Preciso consultar os dados..."
+- "Para calcular isso..."
+- "Vou verificar a base..."
+
+Os dados já estão no JSON fornecido. Use-os diretamente!`;
+PASSO 5: Logo após definir o systemPrompt, encontre onde chama openai.chat.completions.create
+MUDE A MENSAGEM do usuário para:
+typescript{
+  role: "user",
+  content: `Pergunta do usuário: ${message}
+
+DADOS ATUALIZADOS (USE ESTES NÚMEROS NA SUA RESPOSTA):
+- Total de licenciados: ${relevantData.totalLicenciados}
+- Licenciados ATIVOS: ${relevantData.licenciadosAtivos}
+- Licenciados inativos: ${relevantData.licenciadosInativos}
+- Taxa de conversão: ${relevantData.taxaConversao}%
+
+Responda a pergunta usando os números acima.`,
+}
+PASSO 6: Salve o arquivo
+PASSO 7: Reinicie o servidor
+bash# Pare o servidor (Ctrl+C)
+# Inicie novamente
+npm run dev
+PASSO 8: Teste no chat
+Pergunte:
+
+"Quantos licenciados ativos temos?"
+
+PASSO 9: Veja o console do servidor
+Você deve ver algo como:
+=== DEBUG CHAT QUERY ===
+🔍 Total licenciados carregados: 65467
+🔍 Primeiro registro (para ver colunas):
+{
+  "Codigo": "123",
+  "Nome": "João",
+  "Data Ativo": "01/01/2024",
+  ...
+}
+📊 Métricas calculadas: {
+  total: 65467,
+  ativos: 44500,
+  inativos: 20967,
+  taxaConversao: 68.5
+}
+=== FIM DEBUG ===
+PASSO 10: Me mostre o que apareceu no console!
+Copie e cole aqui:
+
+O que apareceu no console
+O que a GAIA respondeu
+
+Com essas informações, vou saber exatamente o que está errado! 🎯
